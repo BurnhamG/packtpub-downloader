@@ -8,18 +8,21 @@ import glob
 import math
 import getopt
 import requests
+import time
 from tqdm import tqdm, trange
 from config import BASE_URL, PRODUCTS_ENDPOINT, URL_BOOK_TYPES_ENDPOINT, URL_BOOK_ENDPOINT
 from user import User
 
 
 #TODO: I should do a function that his only purpose is to request and return data
+
 def book_request(user, offset=0, limit=10, verbose=False):
     data = []
     url = BASE_URL + PRODUCTS_ENDPOINT.format(offset=offset, limit=limit)
     if verbose:
         print(url)
     r = requests.get(url, headers=user.get_header())
+
     data += r.json().get('data', [])
 
     return url, r, data
@@ -35,62 +38,71 @@ def get_books(user, offset=0, limit=10, is_verbose=False, is_quiet=False):
             how many book wanna get by request
     '''
     # TODO: given x time jwt expired and should refresh the header, user.refresh_header()
-    
+
+    tries = 0
+
     url, r, data = book_request(user, offset, limit)
-    
-    print(f'You have {str(r.json()["count"])} books')
-    print("Getting list of books...")
-    
-    if not is_quiet:
-        pages_list = trange(r.json()['count'] // limit, unit='Pages')
+
+    while tries <=5:
+        try:
+            print(f'You have {str(r.json()["count"])} books')
+            print("Getting list of books...")
+
+            if not is_quiet:
+                pages_list = trange(r.json()['count'] // limit, unit='Pages')
+            else:
+                pages_list = range(r.json()['count'] // limit)
+            for i in pages_list:
+                offset += limit
+                data += book_request(user, offset, limit, is_verbose)[2]
+            return data
+
+        except KeyError:
+            tries += 1
+            user.refresh_header()
+            print("There was an error retrieving your data.")
+            print("Retrying...")
+            url, r, data = book_request(user, offset, limit)
+
+    print("An error has occurred!")
+    print("Here is the information:")
+    print("Url is", url, "\n\nRetrieved data is", r.json())
+    print("Exiting now")
+    raise SystemExit
+
+def get_book_info(user, book_id, format='pdf', retrieve_types=False, tries=0):
+    '''
+        Return url of the book or list with file types of a book
+    '''
+    if retrieve_types:
+        url = BASE_URL + URL_BOOK_TYPES_ENDPOINT.format(book_id=book_id)
     else:
-        pages_list = range(r.json()['count'] // limit)
-    for i in pages_list:
-        offset += limit
-        data += book_request(user, offset, limit, is_verbose)[2]
-    return data
+        url = BASE_URL + URL_BOOK_ENDPOINT.format(book_id=book_id, format=format)
 
-
-def get_url_book(user, book_id, format='pdf'):
-    '''
-        Return url of the book to download
-    '''
-    
-    url = BASE_URL + URL_BOOK_ENDPOINT.format(book_id=book_id, format=format)
     r = requests.get(url, headers=user.get_header())
 
     if r.status_code == 200: # success
         return r.json().get('data', '')
 
-    elif r.status_code == 401: # jwt expired 
-        user.refresh_header() # refresh token 
-        get_url_book(user, book_id, format)  # call recursive 
-    
+    elif tries <= 5:
+        if r.status_code == 401: # jwt expired 
+            user.refresh_header() # refresh token 
+
+        elif r.status_code // 100 == 5:
+            tries += 1
+            print("There has been a server error, retrying in 5 seconds...")
+            time.sleep(5)
+
+        get_book_info(user, book_id, format, retrieve_types, tries)  # call recursive 
+
     print('ERROR (please copy and paste in the issue)')
     print(r.json())
     print(r.status_code)
-    return ''
 
-
-def get_book_file_types(user, book_id):
-    '''
-        Return a list with file types of a book
-    '''
-
-    url = BASE_URL + URL_BOOK_TYPES_ENDPOINT.format(book_id=book_id)
-    r = requests.get(url, headers=user.get_header())
-
-    if  (r.status_code == 200): # success
-        return r.json()['data'][0].get('fileTypes', [])
-    
-    elif (r.status_code == 401): # jwt expired 
-        user.refresh_header() # refresh token 
-        get_book_file_types(user, book_id, format)  # call recursive 
-    
-    print('ERROR (please copy and paste in the issue)')
-    print(r.json())
-    print(r.status_code)
-    return []
+    if retrieve_types:
+        return ''
+    else:
+        return []
 
 
 # TODO: i'd like that this functions be async and download faster
@@ -146,7 +158,7 @@ def main(argv):
     # thanks to https://github.com/ozzieperez/packtpub-library-downloader/blob/master/downloader.py
     email = None
     password = None
-    root_directory = 'media' 
+    root_directory = 'media'
     book_file_types = ['pdf', 'mobi', 'epub', 'code']
     separate = None
     verbose = None
@@ -203,7 +215,7 @@ def main(argv):
         books_iter = books
     for book in books_iter:
         # get the different file type of current book
-        file_types = get_book_file_types(user, book['productId'])
+        file_types = get_book_info(user, book['productId'], retrieve_types=True)
         for file_type in file_types:
             if file_type in book_file_types:  # check if the file type entered is available by the current book
                 book_name = book['productName'].replace(' ', '_').replace('.', '_').replace(':', '_').replace('/','')
@@ -213,8 +225,10 @@ def main(argv):
                 else:
                     filename = f'{root_directory}/{book_name}.{file_type}'
                 # get url of the book to download
-                url = get_url_book(user, book['productId'], file_type)
-                if not os.path.exists(filename) and not os.path.exists(filename.replace('.code', '.zip')):
+                url = get_book_info(user, book['productId'], format=file_type)
+                if url == "":
+                    tqdm.write(f'There was an error retrieving {filename}. Skipping...')
+                elif not os.path.exists(filename) and not os.path.exists(filename.replace('.code', '.zip')):
                     download_book(filename, url)
                     make_zip(filename)
                 else:
