@@ -305,9 +305,8 @@ def enumerate_book_file_types(
         file_types = get_book_info(user, book["productId"], retrieve_types=True)
         first_file = True
         for file_type in file_types:
-            if (
-                file_type in book_file_types
-            ):  # check if the file type entered is available by the current book
+            # check if the file type entered is available by the current book
+            if file_type in book_file_types:
                 file_name, append = set_book_type(
                     book, file_type, separate, root_directory, first_file
                 )
@@ -354,7 +353,7 @@ def parse_args(argv):
     email = None
     password = None
     root_directory = "media"
-    book_file_types = ["pdf", "mobi", "epub", "code"]
+    book_file_types = ["pdf", "mobi", "epub", "code", "video"]
     newest_number = 0
     parallel = None
     separate = None
